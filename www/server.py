@@ -406,350 +406,6 @@ class JavascriptMinify(object):
 # ========== END OF jsmin.py =========
 #
 
-
-#
-# ========== START OF decoder.py AND scanner.py FROM simple_json PACKAGE ==========
-#
-# This package is licensed under the MIT license (which is compatible with the BSD
-# license used for Ibex).
-#
-# http://pypi.python.org/pypi/simplejson
-#
-import re
-
-# In the original code: from simplejson.scanner import Scanner, pattern
-import sre_parse, sre_compile, sre_constants
-from sre_constants import BRANCH, SUBPATTERN
-from re import VERBOSE, MULTILINE, DOTALL
-import re
-
-__all__ = ['Scanner', 'pattern']
-
-FLAGS = (VERBOSE | MULTILINE | DOTALL)
-class Scanner(object):
-    def __init__(self, lexicon, flags=FLAGS):
-        self.actions = [None]
-        # combine phrases into a compound pattern
-        s = sre_parse.Pattern()
-        s.flags = flags
-        p = []
-        for idx, token in enumerate(lexicon):
-            phrase = token.pattern
-            try:
-                subpattern = sre_parse.SubPattern(s,
-                    [(SUBPATTERN, (idx + 1, sre_parse.parse(phrase, flags)))])
-            except sre_constants.error:
-                raise
-            p.append(subpattern)
-            self.actions.append(token)
-
-        p = sre_parse.SubPattern(s, [(BRANCH, (None, p))])
-        self.scanner = sre_compile.compile(p)
-
-
-    def iterscan(self, string, idx=0, context=None):
-        """
-        Yield match, end_idx for each match
-        """
-        match = self.scanner.scanner(string, idx).match
-        actions = self.actions
-        lastend = idx
-        end = len(string)
-        while True:
-            m = match()
-            if m is None:
-                break
-            matchbegin, matchend = m.span()
-            if lastend == matchend:
-                break
-            action = actions[m.lastindex]
-            if action is not None:
-                rval, next_pos = action(m, context)
-                if next_pos is not None and next_pos != matchend:
-                    # "fast forward" the scanner
-                    matchend = next_pos
-                    match = self.scanner.scanner(string, matchend).match
-                yield rval, matchend
-            lastend = matchend
-
-def pattern(pattern, flags=FLAGS):
-    def decorator(fn):
-        fn.pattern = pattern
-        fn.regex = re.compile(pattern, flags)
-        return fn
-    return decorator
-
-FLAGS = re.VERBOSE | re.MULTILINE | re.DOTALL
-
-def _floatconstants():
-    import struct
-    import sys
-    import binascii
-    _BYTES = binascii.unhexlify('7FF80000000000007FF0000000000000')
-    if sys.byteorder != 'big':
-        _BYTES = _BYTES[:8][::-1] + _BYTES[8:][::-1]
-    nan, inf = struct.unpack('dd', _BYTES)
-    return nan, inf, -inf
-
-NaN, PosInf, NegInf = _floatconstants()
-
-def linecol(doc, pos):
-    lineno = doc.count('\n', 0, pos) + 1
-    if lineno == 1:
-        colno = pos
-    else:
-        colno = pos - doc.rindex('\n', 0, pos)
-    return lineno, colno
-
-def errmsg(msg, doc, pos, end=None):
-    lineno, colno = linecol(doc, pos)
-    if end is None:
-        return '%s: line %d column %d (char %d)' % (msg, lineno, colno, pos)
-    endlineno, endcolno = linecol(doc, end)
-    return '%s: line %d column %d - line %d column %d (char %d - %d)' % (
-        msg, lineno, colno, endlineno, endcolno, pos, end)
-
-_CONSTANTS = {
-    '-Infinity': NegInf,
-    'Infinity': PosInf,
-    'NaN': NaN,
-    'true': True,
-    'false': False,
-    'null': None,
-}
-
-def JSONConstant(match, context, c=_CONSTANTS):
-    return c[match.group(0)], None
-pattern('(-?Infinity|NaN|true|false|null)')(JSONConstant)
-
-def JSONNumber(match, context):
-    match = JSONNumber.regex.match(match.string, *match.span())
-    integer, frac, exp = match.groups()
-    if frac or exp:
-        res = float(integer + (frac or '') + (exp or ''))
-    else:
-        res = int(integer)
-    return res, None
-pattern(r'(-?(?:0|[1-9]\d*))(\.\d+)?([eE][-+]?\d+)?')(JSONNumber)
-
-STRINGCHUNK = re.compile(r'(.*?)(["\\])', FLAGS)
-BACKSLASH = {
-    '"': u'"', '\\': u'\\', '/': u'/',
-    'b': u'\b', 'f': u'\f', 'n': u'\n', 'r': u'\r', 't': u'\t',
-}
-
-DEFAULT_ENCODING = "UTF-8"
-
-def scanstring(s, end, encoding=None, _b=BACKSLASH, _m=STRINGCHUNK.match):
-    if encoding is None:
-        encoding = DEFAULT_ENCODING
-    chunks = []
-    _append = chunks.append
-    begin = end - 1
-    while 1:
-        chunk = _m(s, end)
-        if chunk is None:
-            raise ValueError(
-                errmsg("Unterminated string starting at", s, begin))
-        end = chunk.end()
-        content, terminator = chunk.groups()
-        if content:
-            if not isinstance(content, unicode):
-                content = unicode(content, encoding)
-            _append(content)
-        if terminator == '"':
-            break
-        try:
-            esc = s[end]
-        except IndexError:
-            raise ValueError(
-                errmsg("Unterminated string starting at", s, begin))
-        if esc != 'u':
-            try:
-                m = _b[esc]
-            except KeyError:
-                raise ValueError(
-                    errmsg("Invalid \\escape: %r" % (esc,), s, end))
-            end += 1
-        else:
-            esc = s[end + 1:end + 5]
-            try:
-                m = unichr(int(esc, 16))
-                if len(esc) != 4 or not esc.isalnum():
-                    raise ValueError
-            except ValueError:
-                raise ValueError(errmsg("Invalid \\uXXXX escape", s, end))
-            end += 5
-        _append(m)
-    return u''.join(chunks), end
-
-def JSONString(match, context):
-    encoding = getattr(context, 'encoding', None)
-    return scanstring(match.string, match.end(), encoding)
-pattern(r'"')(JSONString)
-
-WHITESPACE = re.compile(r'\s*', FLAGS)
-
-def JSONObject(match, context, _w=WHITESPACE.match):
-    pairs = {}
-    s = match.string
-    end = _w(s, match.end()).end()
-    nextchar = s[end:end + 1]
-    # trivial empty object
-    if nextchar == '}':
-        return pairs, end + 1
-    if nextchar != '"':
-        raise ValueError(errmsg("Expecting property name", s, end))
-    end += 1
-    encoding = getattr(context, 'encoding', None)
-    iterscan = JSONScanner.iterscan
-    while True:
-        key, end = scanstring(s, end, encoding)
-        end = _w(s, end).end()
-        if s[end:end + 1] != ':':
-            raise ValueError(errmsg("Expecting : delimiter", s, end))
-        end = _w(s, end + 1).end()
-        try:
-            value, end = iterscan(s, idx=end, context=context).next()
-        except StopIteration:
-            raise ValueError(errmsg("Expecting object", s, end))
-        pairs[key] = value
-        end = _w(s, end).end()
-        nextchar = s[end:end + 1]
-        end += 1
-        if nextchar == '}':
-            break
-        if nextchar != ',':
-            raise ValueError(errmsg("Expecting , delimiter", s, end - 1))
-        end = _w(s, end).end()
-        nextchar = s[end:end + 1]
-        end += 1
-        if nextchar != '"':
-            raise ValueError(errmsg("Expecting property name", s, end - 1))
-    object_hook = getattr(context, 'object_hook', None)
-    if object_hook is not None:
-        pairs = object_hook(pairs)
-    return pairs, end
-pattern(r'{')(JSONObject)
-
-def JSONArray(match, context, _w=WHITESPACE.match):
-    values = []
-    s = match.string
-    end = _w(s, match.end()).end()
-    # look-ahead for trivial empty array
-    nextchar = s[end:end + 1]
-    if nextchar == ']':
-        return values, end + 1
-    iterscan = JSONScanner.iterscan
-    while True:
-        try:
-            value, end = iterscan(s, idx=end, context=context).next()
-        except StopIteration:
-            raise ValueError(errmsg("Expecting object", s, end))
-        values.append(value)
-        end = _w(s, end).end()
-        nextchar = s[end:end + 1]
-        end += 1
-        if nextchar == ']':
-            break
-        if nextchar != ',':
-            raise ValueError(errmsg("Expecting , delimiter", s, end))
-        end = _w(s, end).end()
-    return values, end
-pattern(r'\[')(JSONArray)
-
-ANYTHING = [
-    JSONObject,
-    JSONArray,
-    JSONString,
-    JSONConstant,
-    JSONNumber,
-]
-
-JSONScanner = Scanner(ANYTHING)
-
-class JSONDecoder(object):
-    """
-    Simple JSON <http://json.org> decoder
-
-    Performs the following translations in decoding:
-
-    +---------------+-------------------+
-    | JSON          | Python            |
-    +===============+===================+
-    | object        | dict              |
-    +---------------+-------------------+
-    | array         | list              |
-    +---------------+-------------------+
-    | string        | unicode           |
-    +---------------+-------------------+
-    | number (int)  | int, long         |
-    +---------------+-------------------+
-    | number (real) | float             |
-    +---------------+-------------------+
-    | true          | True              |
-    +---------------+-------------------+
-    | false         | False             |
-    +---------------+-------------------+
-    | null          | None              |
-    +---------------+-------------------+
-
-    It also understands ``NaN``, ``Infinity``, and ``-Infinity`` as
-    their corresponding ``float`` values, which is outside the JSON spec.
-    """
-
-    _scanner = Scanner(ANYTHING)
-    __all__ = ['__init__', 'decode', 'raw_decode']
-
-    def __init__(self, encoding=None, object_hook=None):
-        """
-        ``encoding`` determines the encoding used to interpret any ``str``
-        objects decoded by this instance (utf-8 by default).  It has no
-        effect when decoding ``unicode`` objects.
-
-        Note that currently only encodings that are a superset of ASCII work,
-        strings of other encodings should be passed in as ``unicode``.
-
-        ``object_hook``, if specified, will be called with the result
-        of every JSON object decoded and its return value will be used in
-        place of the given ``dict``.  This can be used to provide custom
-        deserializations (e.g. to support JSON-RPC class hinting).
-        """
-        self.encoding = encoding
-        self.object_hook = object_hook
-
-    def decode(self, s, _w=WHITESPACE.match):
-        """
-        Return the Python representation of ``s`` (a ``str`` or ``unicode``
-        instance containing a JSON document)
-        """
-        obj, end = self.raw_decode(s, idx=_w(s, 0).end())
-        end = _w(s, end).end()
-        if end != len(s):
-            raise ValueError(errmsg("Extra data", s, end, len(s)))
-        return obj
-
-    def raw_decode(self, s, **kw):
-        """
-        Decode a JSON document from ``s`` (a ``str`` or ``unicode`` beginning
-        with a JSON document) and return a 2-tuple of the Python
-        representation and the index in ``s`` where the document ended.
-
-        This can be used to decode a JSON document from a string that may
-        have extraneous data at the end.
-        """
-        kw.setdefault('context', self)
-        try:
-            obj, end = self._scanner.iterscan(s, **kw).next()
-        except StopIteration:
-            raise ValueError("No JSON object could be decoded")
-        return obj, end
-
-__all__ = ['JSONDecoder']
-#
-# ========== END OF decoder.py AND scanner.py ==========
-#
-
 #
 # Random utility.
 #
@@ -946,9 +602,11 @@ def css_spit_out(css_definitions, ofile):
 # If EXTERNAL_CONFIG_URL has already been defined in this file, don't attempt
 # to open SERVER_CONF_PY_FILE, even if it's defined.
 CFG = { }
-if (not globals().has_key('EXTERNAL_CONFIG_URL') or (not globals()['EXTERNAL_CONFIG_URL'])) and globals().has_key('SERVER_CONF_PY_FILE') and globals()['SERVER_CONF_PY_FILE']:
+if ((not 'EXTERNAL_CONFIG_URL' in globals()) or (not 'EXTERNAL_CONFIG_URL' in globals()) and ('SERVER_CONF_PY_FILE' in globals()) and ('SERVER_CONF_PY_FILE' in globals())):
     try:
-        execfile(SERVER_CONF_PY_FILE, CFG)
+        with open(SERVER_CONF_PY_FILE) as f:
+            code = f.read()
+            exec(code, CFG)
     except Exception as e:
         print ("Could not open/load config file: %s" % e)
         sys.exit(1)
@@ -958,9 +616,9 @@ else:
 # Check if we're using external or internal config.
 extkeys = ['EXTERNAL_CONFIG_URL', 'EXTERNAL_CONFIG_METHOD', 'EXTERNAL_CONFIG_PASS_PARAMS']
 for k in extkeys: # Note that logging can't be set up till config is parsed, so we use sys.stderr here.
-    if CFG.has_key(k) and CFG[k]:
+    if k in CFG and CFG[k]:
         for kk in extkeys:
-            if not (CFG.has_key(kk) and CFG[kk]):
+            if not (kk in CFG and CFG[kk]):
                 vs = ', '.join(map(lambda x: "'%s'" % x))
                 sys.stderr.write("If one of the configuration variables %s is present, then all %i must be present." % (vs, len(vs)))
                 sys.exit(1)
@@ -1003,13 +661,13 @@ for k in extkeys: # Note that logging can't be set up till config is parsed, so 
         break
 
 # Back compat.
-if CFG.has_key('WEBSPR_WORKING_DIR') and not CFG.has_key('IBEX_WORKING_DIR'):
+if 'WEBSPR_WORKING_DIR' in CFG and not 'IBEX_WORKING_DIR' in CFG:
     CFG['IBEX_WORKING_DIR'] = CFG['WEBSPR_WORKING_DIR']
 
 logging.basicConfig()
 logger = logging.getLogger("server")
 logger.addHandler(logging.StreamHandler())
-log_filename = os.path.join(CFG.has_key('IBEX_WORKING_DIR') and CFG['IBEX_WORKING_DIR'] or '', 'server.log')
+log_filename = os.path.join('IBEX_WORKING_DIR' in CFG and CFG['IBEX_WORKING_DIR'] or '', 'server.log')
 try:
     open(log_filename, "w").close();
 except:
@@ -1024,13 +682,13 @@ for k in ['RESULT_FILE_NAME',
           'CSS_INCLUDES_DIR', 'OTHER_INCLUDES_DIR', 'CACHE_DIR', 'JS_INCLUDES_LIST', 'DATA_INCLUDES_LIST',
           'CSS_INCLUDES_LIST', 'STATIC_FILES_DIR', 'INCLUDE_COMMENTS_IN_RESULTS_FILE',
           'SIMPLE_RESULTS_FILE_COMMENTS', 'INCLUDE_HEADERS_IN_RESULTS_FILE']:
-    if not CFG.has_key(k):
+    if not k in CFG:
         logger.error("Configuration variable '%s' was not defined." % k)
         sys.exit(1)
 # Define optional variables if they are not already defined.
-CFG['PORT'] = CFG.has_key('PORT') and CFG['PORT'] or None
-CFG['IBEX_WORKING_DIR'] = CFG.has_key('IBEX_WORKING_DIR') and CFG['IBEX_WORKING_DIR'] or None
-CFG['MINIFY_JS'] = CFG.has_key('MINIFY_JS') and CFG['MINIFY_JS'] or False
+CFG['PORT'] = 'PORT' in CFG and CFG['PORT'] or None
+CFG['IBEX_WORKING_DIR'] = 'IBEX_WORKING_DIR' in CFG and CFG['IBEX_WORKING_DIR'] or None
+CFG['MINIFY_JS'] = 'MINIFY_JS' in CFG and CFG['MINIFY_JS'] or False
 
 # Check for "-m" and "-p" options (sets server mode and port respectively).
 # Also check for "-r" option (resest counter on startup).
@@ -1048,16 +706,16 @@ except ValueError:
     sys.exit(1)
 
 # Check values of (some) conf variables.
-if CFG['SERVER_MODE'] != "cgi" and type(CFG['PORT']) != types.IntType:
+if CFG['SERVER_MODE'] != "cgi" and type(CFG['PORT']) != int:
     logger.error("Bad value (or no value) for server port.")
     sys.exit(1)
-if type(CFG['JS_INCLUDES_LIST']) != types.ListType or len(CFG['JS_INCLUDES_LIST']) < 1 or (CFG['JS_INCLUDES_LIST'][0] not in ["block", "allow"]):
+if type(CFG['JS_INCLUDES_LIST']) != list or len(CFG['JS_INCLUDES_LIST']) < 1 or (CFG['JS_INCLUDES_LIST'][0] not in ["block", "allow"]):
     logger.error("Bad value for 'JS_INCLUDES_LIST' conf variable.")
     sys.exit(1)
-if type(CFG['CSS_INCLUDES_LIST']) != types.ListType or len(CFG['CSS_INCLUDES_LIST']) < 1 or (CFG['CSS_INCLUDES_LIST'][0] not in ["block", "allow"]):
+if type(CFG['CSS_INCLUDES_LIST']) != list or len(CFG['CSS_INCLUDES_LIST']) < 1 or (CFG['CSS_INCLUDES_LIST'][0] not in ["block", "allow"]):
     logger.error("Bad value for 'CSS_INCLUDES_LIST' conf variable.")
     sys.exit(1)
-if type(CFG['DATA_INCLUDES_LIST']) != types.ListType or len(CFG['DATA_INCLUDES_LIST']) < 1 or (CFG['DATA_INCLUDES_LIST'][0] not in ["block", "allow"]):
+if type(CFG['DATA_INCLUDES_LIST']) != list or len(CFG['DATA_INCLUDES_LIST']) < 1 or (CFG['DATA_INCLUDES_LIST'][0] not in ["block", "allow"]):
     logger.error("Bad value for 'DATA_INCLUDES_LIST' conf variable.")
     sys.exit(1)
 
@@ -1080,12 +738,12 @@ if CFG['SERVER_MODE'] not in ["paste", "toy", "cgi"]:
 
 if CFG['SERVER_MODE'] in ["toy", "paste"]:
     import threading
-    import BaseHTTPServer
-    import SimpleHTTPServer
-    import SocketServer
+    import http.server
+
+    import socketserver
 
 PWD = None
-if CFG.has_key('IBEX_WORKING_DIR'):
+if 'IBEX_WORKING_DIR' in CFG:
     PWD = CFG['IBEX_WORKING_DIR']
 if os.environ.get("IBEX_WORKING_DIR"):
     PWD = os.environ.get("IBEX_WORKING_DIR")
@@ -1486,19 +1144,19 @@ def control(env, start_response):
     thetime = time_module.time()
 
     ip = None
-    if env.has_key('HTTP_X_FORWARDED_FOR'):
+    if 'HTTP_X_FORWARDED_FOR' in env:
         ip = env['HTTP_X_FORWARDED_FOR']
     else:
         ip = env['REMOTE_ADDR']
 
     user_agent = "Unknown user agent"
-    if env.has_key('USER_AGENT'):
+    if 'USER_AGENT' in env:
         user_agent = env['USER_AGENT']
-    elif env.has_key('HTTP_USER_AGENT'):
+    elif 'HTTP_USER_AGENT' in env:
         user_agent = env['HTTP_USER_AGENT']
 
     base = None
-    if env.has_key('REQUEST_URI'):
+    if 'REQUEST_URI' in env:
         base = env['REQUEST_URI']
     else:
         base = env['PATH_INFO']
@@ -1513,11 +1171,11 @@ def control(env, start_response):
     last = filter(lambda x: x != [], base.split('/'))[-1];
 
     if last == PY_SCRIPT_NAME:
-        qs = env.has_key('QUERY_STRING') and env['QUERY_STRING'].lstrip('?') or ''
+        qs = 'QUERY_STRING' in env and env['QUERY_STRING'].lstrip('?') or ''
         qs_hash = cgi.parse_qs(qs)
 
         # Is it a request for a JS/CSS include file?
-        if qs_hash.has_key('include'):
+        if 'include' in qs_hash:
             if qs_hash['include'][0] == 'serverinfo_js':
                 start_response('200 OK', [('Content-Type', 'text/javascript; charset=UTF-8')])
                 # Can't use a generator expression here because we need to maintain Python 2.3 compat.
@@ -1553,13 +1211,13 @@ def control(env, start_response):
 
                 # Do we set the 'overview' option?
                 retlist = [contents]
-                if qs_hash.has_key('overview') and qs_hash['overview'][0].upper() == "YES":
+                if 'overview' in qs_hash and qs_hash['overview'][0].upper() == "YES":
                     defs.append("var conf_showOverview = true;\n")
 
                 # Set the value of the counter (either saved, or provided as part of the URL).
                 counter_value = None
                 try:
-                    counter_value = (qs_hash.has_key('withsquare') and (int(qs_hash['withsquare'][0]),) or (get_counter(),))[0]
+                    counter_value = ('withsquare' in qs_hash and (int(qs_hash['withsquare'][0]),) or (get_counter(),))[0]
                 except ValueError:
                     start_response('400 Bad Request', [('Content-Type', 'text/html; charset=UTF-8')])
                     return ["<html><body><h1>400 Bad Request</h1></body></html>"]
@@ -1570,7 +1228,7 @@ def control(env, start_response):
                 return retlist
 
         # Is it a request for a JSON dict of all chunks? This should maybe be cached at some point.
-        if qs_hash.has_key('allchunks'):
+        if 'allchunks' in qs_hash:
             jsondict = { }
             f = None
             try:
@@ -1598,7 +1256,7 @@ def control(env, start_response):
             return [dict_to_json(jsondict)]
 
         # or a resource?
-        if qs_hash.has_key('resource'):
+        if 'resource' in qs_hash:
             f = None
             try:
                 p = os.path.join(PWD, CFG['CHUNK_INCLUDES_DIR'], qs_hash['resource'][0])
@@ -1623,7 +1281,7 @@ def control(env, start_response):
                 start_response('500 Internal Server Error' [('Content-Type', 'text/html; charset=UTF-8')])
                 return ["<html><body><h1>500 Internal Server Error</h1></body></html>"]
 
-        if qs_hash.has_key('withsquare'):
+        if 'withsquare' in qs_hash:
             ivalue = None
             try:
                 ivalue = int(qs_hash['withsquare'][0])
@@ -1634,7 +1292,7 @@ def control(env, start_response):
             start_response('200 OK', [('Content-Type', 'text/html; charset=UTF-8')])
             return [generate_html(setcounter=ivalue, overview=False)]
 
-        if qs_hash.has_key('setsquare'):
+        if 'setsquare' in qs_hash:
             updatef = None
             setsquare = qs_hash['setsquare'][0]
             try:
@@ -1654,7 +1312,7 @@ def control(env, start_response):
         # (All branches above end with a return from this function.)
 
         # ...if none of the above, it's some results.
-        if not (env['REQUEST_METHOD'] == 'POST' and env.has_key('CONTENT_LENGTH')):
+        if not (env['REQUEST_METHOD'] == 'POST' and 'CONTENT_LENGTH' in env):
             start_response('400 Bad Request', [('Content-Type', 'text/html; charset=UTF-8')])
             return ["<html><body><h1>400 Bad Request</h1></body></html>"]
 
@@ -1737,10 +1395,10 @@ def control(env, start_response):
         return ["<html><body><h1>404 Not Found</h1></body></html>"]
 
 if CFG['SERVER_MODE'] != "cgi":
-    class ThreadedHTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
+    class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         pass
 
-    class MyHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler, ):
+    class MyHTTPRequestHandler(http.server.SimpleHTTPRequestHandler, ):
         STATIC_FILES = [
             'experiment.html',
             'overview.html',
@@ -1766,15 +1424,15 @@ if CFG['SERVER_MODE'] != "cgi":
                 ".swf"  : "application/x-shockwave-flash"
             }
 
-            SimpleHTTPServer.SimpleHTTPRequestHandler.__init__(self, request, client_address, server)
+            http.server.SimpleHTTPRequestHandler.__init__(self, request, client_address, server)
 
         def do_either(self, method_name):
-            last = filter(lambda x: x != [], self.path.split('/'))[-1];
+            last = list(filter(lambda x: x != [], self.path.split('/')))[-1]
             ps = last.split('?')
             qs = len(ps) > 1 and ps[1] or None
             path = ps[0]
             if method_name == 'GET' and path in MyHTTPRequestHandler.STATIC_FILES:
-                return SimpleHTTPServer.SimpleHTTPRequestHandler.do_GET(self);
+                return http.server.SimpleHTTPRequestHandler.do_GET(self);
             else:
                 # Bit of a hack. The 'control' function was written for use with the
                 # paste module's simple HTTP server, but SimpleHTTPServer has a different
@@ -1793,13 +1451,13 @@ if CFG['SERVER_MODE'] != "cgi":
                     env['QUERY_STRING'] = qs
                 if method_name == "POST":
                     env['wsgi.input'] = self.rfile
-                cl = self.headers.getheader("Content-Length")
+                    cl = self.headers.get("Content-Length")
                 if cl:
                     env['CONTENT_LENGTH'] = cl
-                ct = self.headers.getheader("Content-Type")
+                    ct = self.headers.get("Content-Type")
                 if ct:
                     env['CONTENT_TYPE'] = ct
-                ua = self.headers.getheader("User-Agent")
+                    ua = self.headers.get("User-Agent")
                 if ua:
                     env['USER_AGENT'] = ua
 
@@ -1811,13 +1469,13 @@ if CFG['SERVER_MODE'] != "cgi":
                     if headers[0]:
                         for h in headers[0]:
                             self.send_header(h[0], h[1])
-                    self.wfile.write('\n')
+                    self.wfile.write('\n'.encode())
                     for cs in body:
                         self.wfile.write(cs)
-                except:
+                except Exception as e:
                     # If we let exceptions percolate, we end up serving things as static
                     # files which shouldn't be.
-                    logger.error("Error in responding to GET/POST request for toy Python HTTP server.");
+                    logger.error("Error in responding to GET/POST request for toy Python HTTP server." % e)
 
         def do_GET(self):
             self.do_either('GET')
