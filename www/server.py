@@ -147,7 +147,7 @@ import types
 import logging
 import getopt
 import itertools
-import StringIO
+import io
 if (sys.version.split(' ')[0]) >= '3.0': # No md5 module in Python 3000.
     import hashlib as md5
 else:
@@ -222,8 +222,6 @@ except ImportError:
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 # */
-
-from StringIO import StringIO
 
 def jsmin(js):
     ins = StringIO(js)
@@ -486,7 +484,8 @@ FLAGS = re.VERBOSE | re.MULTILINE | re.DOTALL
 def _floatconstants():
     import struct
     import sys
-    _BYTES = '7FF80000000000007FF0000000000000'.decode('hex')
+    import binascii
+    _BYTES = binascii.unhexlify('7FF80000000000007FF0000000000000')
     if sys.byteorder != 'big':
         _BYTES = _BYTES[:8][::-1] + _BYTES[8:][::-1]
     nan, inf = struct.unpack('dd', _BYTES)
@@ -950,8 +949,8 @@ CFG = { }
 if (not globals().has_key('EXTERNAL_CONFIG_URL') or (not globals()['EXTERNAL_CONFIG_URL'])) and globals().has_key('SERVER_CONF_PY_FILE') and globals()['SERVER_CONF_PY_FILE']:
     try:
         execfile(SERVER_CONF_PY_FILE, CFG)
-    except Exception, e:
-        print "Could not open/load config file: %s" % e
+    except Exception as e:
+        print ("Could not open/load config file: %s" % e)
         sys.exit(1)
 else:
     CFG = globals()
@@ -995,7 +994,7 @@ for k in extkeys: # Note that logging can't be set up till config is parsed, so 
                 except ValueError:
                     sys.stderr.write("Bad JSON data received from the following external configuration URL: %s" % url)
                     sys.exit(1)
-            except IOError, e:
+            except IOError as e:
                 sys.stderr.write("Error opening the following URL to get external configuration: %s (%s)" % (url, str(e)))
                 sys.exit(1)
         finally:
@@ -1115,7 +1114,7 @@ def get_counter():
         n = int(f.read().strip())
         unlock_and_close(f)
         return n
-    except (IOError, ValueError), e:
+    except (IOError, ValueError) as e:
         logger.error("Error reading counter from server state: %s" % str(e))
         sys.exit(1)
 def set_counter(n):
@@ -1123,7 +1122,7 @@ def set_counter(n):
         f = lock_and_open(os.path.join(PWD, CFG['SERVER_STATE_DIR'], 'counter'), "w")
         f.write(str(n))
         unlock_and_close(f)
-    except IOError, e:
+    except IOError as e:
         logger.error("Error setting counter in server state: %s" % str(e))
         sys.exit(1)
 def update_counter(update_func):
@@ -1135,7 +1134,7 @@ def update_counter(update_func):
         f.seek(0)
         f.write(str(newn))
         unlock_and_close(f)
-    except IOError, e:
+    except IOError as e:
         logger.error("Error updating counter in server state: %s" % str(e))
         sys.exit(1)
 
@@ -1372,7 +1371,7 @@ def create_monster_string(dir, extension, block_allow, cacheKey=None, manipulato
                     newcontent = manipulator(os.path.split(fn)[1], content, s)
                 s.write('\n\n')
                 f.close()
-        except Exception, e:
+        except Exception as e:
             logger.error("Error reading Javascript files in '%s'" % dir)
             sys.exit(1)
     finally:
@@ -1422,7 +1421,7 @@ try:
         sys.exit(1)
     elif not os.path.isdir(os.path.join(PWD, CFG['RESULT_FILES_DIR'])):
         os.mkdir(os.path.join(PWD, CFG['RESULT_FILES_DIR']))
-except os.error, IOError:
+except (os.error, IOError):
     logger.error("Could not create results directory at %s" % os.path.join(PWD, CFG['RESULT_FILES_DIR']))
     sys.exit(1)
 
@@ -1441,7 +1440,7 @@ try:
         f = open(os.path.join(PWD, CFG['SERVER_STATE_DIR'], 'counter'), "w")
         f.write("0")
         f.close()
-except os.error, IOError:
+except (os.error, IOError):
     logger.error("Could not create server state directory at %s" % os.path.join(PWD, CFG['SERVER_STATE_DIR']))
     sys.exit(1)
 
@@ -1477,7 +1476,7 @@ try:
                 for fname in fs:
                     if fname != 'MINIFY_JS' and os.path.isfile(os.path.join(PWD, CFG['CACHE_DIR'], fname)):
                         os.remove(os.path.join(PWD, CFG['CACHE_DIR'], fname))
-    except os.error, IOError:
+    except (os.error, IOError):
         logger.error("Could not create cache directory at %s" % os.path.join(PWD, CFG['CACHE_DIR']))
 finally:
     if mjs: mjs.close()
@@ -1583,7 +1582,7 @@ def control(env, start_response):
                         try:
                             f = open(os.path.join(PWD, CFG['CHUNK_INCLUDES_DIR'], fname))
                             jsondict[fname] = f.read()
-                        except IOError, e:
+                        except IOError as e:
                             if e.errno == errno.EISDIR:
                                 pass
                             else:
@@ -1591,7 +1590,7 @@ def control(env, start_response):
                                 return ["<html><body><h1>500 Internal Server Error</h1></body></html>"]
                     finally:
                         if f: f.close()
-            except IOError, e:
+            except IOError as e:
                 start_response('500 Internal Server Error', [('Content-Type', 'text/html; charset=UTF-8')])
                 return ["<html><body><h1>500 Internal Server Error</h1></body></html>"]
 
@@ -1620,7 +1619,7 @@ def control(env, start_response):
 
                 start_response('200 OK', [('Content-Type', 'audio/mpeg'), ('Content-Length', stats.st_size)])
                 return it()
-            except IOError, e:
+            except IOError as e:
                 start_response('500 Internal Server Error' [('Content-Type', 'text/html; charset=UTF-8')])
                 return ["<html><body><h1>500 Internal Server Error</h1></body></html>"]
 
@@ -1645,7 +1644,7 @@ def control(env, start_response):
                 else:
                     ivalue = int(setsquare)
                     updatef = lambda x: ivalue
-            except ValueError, e:
+            except (ValueError, e):
                 start_response('400 Bad Request', [('Content-Type', 'text/html; charset=UTF-8')])
                 return ["<html><body><h1>400 Bad Request</h1></body></html>"]
             update_counter(updatef)
@@ -1829,7 +1828,7 @@ if CFG['SERVER_MODE'] != "cgi":
 if __name__ == "__main__":
     if COUNTER_SHOULD_BE_RESET:
         set_counter(0)
-        print "Counter for latin square designs has been reset.\n"
+        print ("Counter for latin square designs has been reset.\n")
 
     if CFG['SERVER_MODE'] in ["paste", "toy"]:
         server_address = ('', CFG['PORT'])
